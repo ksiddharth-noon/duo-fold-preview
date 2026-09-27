@@ -125,3 +125,12 @@ input[type=range]:disabled::-webkit-slider-thumb{background:rgb(17 17 17 / .3);b
 #screen-menu button[aria-selected=true]::after{content:"";width:6px;height:6px;border-radius:50%;background:#111}
 @media (max-width:560px){#screen-toggle{padding-inline:14px;min-height:48px}#screen-menu{min-width:160px}}
 #screen-menu[hidden]{display:none}
+
+/* Orientation toggle: two device glyphs in a pill, the pressed one lifted. */
+.orientation-toggle{display:flex;flex:none;gap:2px;padding:5px;border-radius:999px;background:rgb(236 236 236 / .5);-webkit-backdrop-filter:blur(18px) saturate(130%);backdrop-filter:blur(18px) saturate(130%);box-shadow:inset 0 0 0 1px rgb(255 255 255 / .45),0 0 0 1px rgb(0 0 0 / .035),0 2px 7px rgb(0 0 0 / .055),0 8px 26px rgb(0 0 0 / .065)}
+.orientation-toggle button{display:flex;align-items:center;justify-content:center;width:44px;min-height:44px;padding:0;border-radius:999px;background:none;color:var(--ink-muted);transition:background .18s ease,color .18s ease}
+.orientation-toggle button:hover{color:#111;background:rgb(255 255 255 / .35)}
+.orientation-toggle button[aria-pressed=true]{color:#111;background:#fff;box-shadow:0 1px 2px rgb(0 0 0 / .08),0 2px 8px rgb(0 0 0 / .06)}
+.control-dock{width:min(500px,calc(100% - 172px))}
+@media(max-width:700px){.control-dock{width:calc(100% - 94px)}.orientation-toggle button{width:38px;min-height:38px}}
+@media(max-width:560px){.controls{flex-wrap:wrap;justify-content:flex-end}.fold-menu{flex-basis:100%}}

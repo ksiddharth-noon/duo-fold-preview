@@ -51,7 +51,10 @@ controls.maxDistance = 65;
 controls.target.set(0, 0, .275454);
 controls.update();
 const phone = new THREE.Group();
-scene.add(phone);
+// The rig carries the orientation turn; the phone inside it keeps the fold offset.
+const rig = new THREE.Group();
+rig.add(phone);
+scene.add(rig);
 const bend = { value: 0 };
 let angle = 0;
 let playing = false;
@@ -126,6 +129,35 @@ for (const kind of ['inner', 'outer']) {
     pixel: { value: new THREE.Vector2(1 / defaultUIs[uiTheme][kind].width, 1 / defaultUIs[uiTheme][kind].height) },
   };
 }
+/** Fit an image onto a screen canvas without cropping. Portrait layouts are drawn a
+ * quarter turn anticlockwise, so they read upright once the device turns clockwise. */
+function fittedCanvas(image, width, height, fill, portrait = false) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const c = canvas.getContext('2d');
+  c.fillStyle = fill; c.fillRect(0, 0, width, height);
+  const [boxW, boxH] = portrait ? [height, width] : [width, height];
+  if (portrait) { c.translate(0, height); c.rotate(-Math.PI / 2); }
+  const scale = Math.min(boxW / image.width, boxH / image.height);
+  c.drawImage(image, (boxW - image.width * scale) / 2, (boxH - image.height * scale) / 2,
+    image.width * scale, image.height * scale);
+  return canvas;
+}
+function canvasTexture(canvas) {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return texture;
+}
+function setScreenMap(kind, texture) {
+  const screen = screens[kind];
+  if (screen.material.map === texture) return;
+  screen.material.map = texture;
+  screen.material.needsUpdate = true;
+  screen.pixel.value.set(1 / texture.image.width, 1 / texture.image.height);
+}
+// The open screen has a layout per orientation; whichever is nearer upright is shown.
+let innerSet = { landscape: screens.inner.defaultTextures.portfolio, portrait: null };
 const demo = document.createElement('video');
 demo.id = 'navigation-demo'; demo.hidden = true; document.body.appendChild(demo);
 // The walkthrough recording is not shipped; the inner screen stays on the still.
@@ -166,18 +198,14 @@ for (const kind of ['outer', 'inner']) {
     const url = URL.createObjectURL(file);
     try {
       const image = new Image(); image.src = url; await image.decode();
-      const canvas = document.createElement('canvas');
-      canvas.width = kind === 'inner' ? 1440 : 390;
-      canvas.height = kind === 'inner' ? 1012 : 567;
-      const c = canvas.getContext('2d'); c.fillStyle = '#fafafa'; c.fillRect(0, 0, canvas.width, canvas.height);
-      const scale = Math.min(canvas.width / image.width, canvas.height / image.height);
-      c.drawImage(image, (canvas.width-image.width*scale)/2, (canvas.height-image.height*scale)/2, image.width*scale, image.height*scale);
-      const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
-      const screen = screens[kind];
-      if (kind === 'inner') { demoEnabled = false; demo.pause(); }
-      if (screen.material.map !== screen.defaultTextures.portfolio && screen.material.map !== demoTexture) screen.material.map.dispose();
-      screen.material.map = texture; screen.material.needsUpdate = true;
-      screen.pixel.value.set(1/canvas.width, 1/canvas.height);
+      const [width, height] = kind === 'inner' ? [1440, 1012] : [390, 567];
+      const texture = canvasTexture(fittedCanvas(image, width, height, '#fafafa'));
+      // Screen-set textures are cached for reuse, so an upload never disposes the one it replaces.
+      if (kind === 'inner') {
+        demoEnabled = false; demo.pause();
+        innerSet = { landscape: texture, portrait: canvasTexture(fittedCanvas(image, width, height, '#fafafa', true)) };
+        updateOrientation(true);
+      } else setScreenMap(kind, texture);
       moveTo(kind === 'inner' ? 180 : 0);
       document.querySelector('#status').textContent = '';
     } catch { document.querySelector('#status').textContent = 'That image could not be opened. Try a PNG, JPG or WebP.'; }
@@ -198,25 +226,20 @@ const experiences = [
   { id: 'account', label: 'Account' },
 ];
 const screenCache = new Map();
+/** kind is 'outer', 'inner' or 'inner-portrait'; the portrait export is 1518 × 2160. */
 async function loadScreenTexture(id, kind) {
   const key = `${id}:${kind}`;
   if (screenCache.has(key)) return screenCache.get(key);
-  const image = new Image();
-  image.src = `./previews/screens/${id}-${kind}.webp`;
-  await image.decode();
-  const canvas = document.createElement('canvas');
-  canvas.width = kind === 'inner' ? 2160 : 585;
-  canvas.height = kind === 'inner' ? 1518 : 851;
-  const c = canvas.getContext('2d');
-  c.fillStyle = '#ffffff'; c.fillRect(0, 0, canvas.width, canvas.height);
-  const scale = Math.min(canvas.width / image.width, canvas.height / image.height);
-  c.drawImage(image, (canvas.width - image.width * scale) / 2, (canvas.height - image.height * scale) / 2,
-    image.width * scale, image.height * scale);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  screenCache.set(key, texture);
-  return texture;
+  const pending = (async () => {
+    const image = new Image();
+    image.src = `./previews/screens/${id}-${kind}.webp`;
+    await image.decode();
+    const [width, height] = kind === 'outer' ? [585, 851] : [2160, 1518];
+    return canvasTexture(fittedCanvas(image, width, height, '#ffffff', kind === 'inner-portrait'));
+  })();
+  screenCache.set(key, pending);
+  pending.catch(() => screenCache.delete(key));
+  return pending;
 }
 const screenToggle = document.querySelector('#screen-toggle');
 const screenMenu = document.querySelector('#screen-menu');
@@ -232,16 +255,13 @@ async function showExperience(id) {
   screenToggle.dataset.loading = 'true';
   try {
     // Fetch both surfaces before swapping either, so the device never shows a mismatched pair.
-    const textures = id === BUNDLED_SCREEN
-      ? { outer: screens.outer.defaultTextures.portfolio, inner: screens.inner.defaultTextures.portfolio }
-      : { outer: await loadScreenTexture(id, 'outer'), inner: await loadScreenTexture(id, 'inner') };
+    const [outer, inner, portrait] = await Promise.all(id === BUNDLED_SCREEN
+      ? [screens.outer.defaultTextures.portfolio, screens.inner.defaultTextures.portfolio, loadScreenTexture(id, 'inner-portrait')]
+      : [loadScreenTexture(id, 'outer'), loadScreenTexture(id, 'inner'), loadScreenTexture(id, 'inner-portrait')]);
     const swap = () => {
-      for (const kind of ['outer', 'inner']) {
-        const screen = screens[kind];
-        screen.material.map = textures[kind];
-        screen.material.needsUpdate = true;
-        screen.pixel.value.set(1 / textures[kind].image.width, 1 / textures[kind].image.height);
-      }
+      setScreenMap('outer', outer);
+      innerSet = { landscape: inner, portrait };
+      updateOrientation(true);
     };
     // Flex the hinge and change the screen at the apex, where the surface is most
     // foreshortened — the swap lands inside the motion instead of popping.
@@ -291,15 +311,54 @@ document.addEventListener('keydown', event => {
 function showDefaultUI() {
   demoPaused = matchMedia('(prefers-reduced-motion: reduce)').matches;
   for (const [kind, screen] of Object.entries(screens)) {
-    const texture = screen.defaultTextures[uiTheme];
-    screen.material.map = texture; screen.material.needsUpdate = true;
-    screen.pixel.value.set(1 / texture.image.width, 1 / texture.image.height);
+    setScreenMap(kind, screen.defaultTextures[uiTheme]);
     screen.frame.value.copy(kind === 'inner' ? innerUIFrame : outerUIFrame);
     screen.gradient.value.set(kind === 'inner' ? .5 : 0, kind === 'inner' ? 0 : 1);
   }
+  innerSet = { landscape: screens.inner.defaultTextures[uiTheme], portrait: null };
+  loadScreenTexture(BUNDLED_SCREEN, 'inner-portrait').then(texture => {
+    if (innerSet.landscape === screens.inner.defaultTextures[uiTheme]) { innerSet.portrait = texture; updateOrientation(true); }
+  }).catch(() => {});
+  updateOrientation(true);
   document.querySelectorAll('[data-ui-theme]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.uiTheme === uiTheme)));
 }
 document.querySelector('#reset-screens').addEventListener('click', showDefaultUI);
+
+// Orientation: the open device turns a quarter clockwise into portrait. The turn is
+// scaled by how far the device is open, so folding shut always lands upright.
+let orientation = 'landscape';
+const turn = { value: 0, from: 0, to: 0, elapsed: 0, duration: .7 };
+let appliedTurn = -1;
+function effectiveTurn() {
+  const open = THREE.MathUtils.smoothstep(angle, 90, 180);
+  return turn.value * open;
+}
+function updateOrientation(force = false) {
+  const t = effectiveTurn();
+  if (!force && t === appliedTurn) return;
+  appliedTurn = t;
+  rig.rotation.z = -Math.PI / 2 * t;
+  // Swap layouts at the diagonal, dimming through it like a rotation snapshot.
+  const texture = t >= .5 && innerSet.portrait ? innerSet.portrait : innerSet.landscape;
+  if (!demoEnabled) setScreenMap('inner', texture);
+  screens.inner.material.color.setScalar(1 - .85 * Math.exp(-(((t - .5) / .1) ** 2)));
+  fitCamera();
+}
+const orientationButtons = document.querySelectorAll('[data-orientation]');
+function setOrientation(value) {
+  if (value === orientation) return;
+  cancelAutoFold();
+  uiTick();
+  orientation = value;
+  for (const button of orientationButtons) button.setAttribute('aria-pressed', String(button.dataset.orientation === value));
+  const target = value === 'portrait' ? 1 : 0;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { turn.value = turn.to = target; }
+  else Object.assign(turn, { from: turn.value, to: target, elapsed: 0 });
+  // Orientation only shows on the open screen, so open the device to show it.
+  if (angle < 180) moveTo(180);
+  updateOrientation(true);
+}
+for (const button of orientationButtons) button.addEventListener('click', () => setOrientation(button.dataset.orientation));
 function moveTo(to) {
   cyclePositionValid = false;
   setPlaying(false);
@@ -328,6 +387,7 @@ function setAngle(value) {
   slider.style.setProperty('--progress', `${value / 1.8}%`);
   bend.value = (180 - value) / 180 * Math.PI;
   screens.outer.material.color.setScalar(value >= 180 ? 0 : 1);
+  updateOrientation();
 }
 play.addEventListener('click', () => {
   endTransition();
@@ -344,6 +404,7 @@ slider.addEventListener('input', () => {
   setPlaying(false);
   setAngle(Number(slider.value));
 });
+let viewSize = { width: 1, height: 1, canvasHeight: 1 };
 function resize() {
   const { width, height } = viewport.getBoundingClientRect();
   const styles = getComputedStyle(viewport);
@@ -354,8 +415,15 @@ function resize() {
   renderer.setSize(width, canvasHeight);
   renderer.domElement.style.top = `${-bleedTop}px`;
   camera.aspect = width / canvasHeight;
+  viewSize = { width, height, canvasHeight };
+  fitCamera();
+}
+function fitCamera() {
+  const { width, height, canvasHeight } = viewSize;
   // The device is still sized against the layout box; the spill is pure headroom.
-  const pixelsPerUnit = Math.min(width / 20, height / 14, 45) * 1.15;
+  // Its footprint swaps axes as it turns into portrait.
+  const t = rig.rotation.z / (-Math.PI / 2);
+  const pixelsPerUnit = Math.min(width / THREE.MathUtils.lerp(20, 14, t), height / THREE.MathUtils.lerp(14, 20, t), 45) * 1.15;
   camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(canvasHeight / pixelsPerUnit / 2 / 40));
   camera.updateProjectionMatrix();
 }
@@ -551,6 +619,13 @@ renderer.setAnimationLoop(now => {
     const ease = progress * progress * (3 - 2 * progress);
     setAngle(THREE.MathUtils.lerp(transition.from, transition.to, ease));
     if (progress === 1) endTransition();
+  }
+  if (turn.value !== turn.to) {
+    turn.elapsed += delta;
+    const progress = Math.min(turn.elapsed / turn.duration, 1);
+    turn.value = THREE.MathUtils.lerp(turn.from, turn.to, progress * progress * (3 - 2 * progress));
+    if (progress === 1) turn.value = turn.to;
+    updateOrientation();
   }
   if (ready) updateDemo();
   controls.update();
