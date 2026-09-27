@@ -54,7 +54,7 @@ PY
 
 The toggle beside the fold control has three layouts. Portrait turns the open device a quarter clockwise into portrait and swaps in the `-inner-portrait` layout at the diagonal. The turn scales with how far the device is open, so folding it shut always lands upright on the cover. The portrait layouts are the **Duo Open - Inner Screen - Portrait** column of the iPhone Duo Figma file.
 
-Split view stays in landscape and crossfades to two apps side by side, following Apple's split layout: each app keeps its controls on its outer edge, and status sits in the right app's strip. noon is the left app, built from each screen's cover design: its content runs edge to edge with the side controls floating over it. Text and buttons sit clear of the controls, while backgrounds, carousels and bottom bars run beneath them. The right app is a placeholder. These are the **Duo Open - Inner Screen - Split View** column in Figma.
+Split view stays in landscape and crossfades to two apps side by side, following Apple's split layout: each app keeps its controls on its outer edge, and status sits in the right app's strip. noon is the left app, built from each screen's cover design: its content runs edge to edge with the side controls floating over it. Each cover layout is scaled intact into the space clear of the controls (text and buttons all share one edge); backgrounds and bottom bars run beneath the controls to the screen edge. The right app is a placeholder. These are the **Duo Open - Inner Screen - Split View** column in Figma.
 
 ## Assets
 
