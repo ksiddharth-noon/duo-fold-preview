@@ -33,9 +33,9 @@ Two things worth knowing:
 
 ## Screens
 
-Each screen is a set in `previews/screens/` — `<id>-outer.webp` for the cover, `<id>-inner.webp` for the open layout in landscape and `<id>-inner-portrait.webp` for the open layout in portrait — listed in `experiences` in [`main.js`](main.js). The default screen is bundled separately as `previews/outer.webp` and `previews/inner.webp`, so changing `BUNDLED_SCREEN` means copying that pair's files too.
+Each screen is a set in `previews/screens/` — `<id>-outer.webp` for the cover, `<id>-inner.webp` for the open layout in landscape, `<id>-inner-portrait.webp` for the open layout in portrait and `<id>-inner-split.webp` for split view — listed in `experiences` in [`main.js`](main.js). The default screen is bundled separately as `previews/outer.webp` and `previews/inner.webp`, so changing `BUNDLED_SCREEN` means copying that pair's files too.
 
-Exports are fitted, never cropped. Ship them at **585 × 851** (cover), **2160 × 1518** (open, landscape) and **1518 × 2160** (open, portrait) — 1.5× the draw canvas, which is roughly a retina display's pixels. Anything larger is discarded at draw time:
+Exports are fitted, never cropped. Ship them at **585 × 851** (cover), **2160 × 1518** (open, landscape and split view) and **1518 × 2160** (open, portrait) — 1.5× the draw canvas, which is roughly a retina display's pixels. Anything larger is discarded at draw time:
 
 ```sh
 python - <<'PY'
@@ -50,9 +50,11 @@ canvas.save('previews/screens/<id>-inner.webp', 'WEBP', quality=88, method=6)
 PY
 ```
 
-## Orientation
+## Layouts
 
-The toggle beside the fold control turns the open device a quarter clockwise into portrait and swaps in the `-inner-portrait` layout at the diagonal. The turn scales with how far the device is open, so folding it shut always lands upright on the cover. The portrait layouts are the **Duo Open - Inner Screen - Portrait** column of the iPhone Duo Figma file.
+The toggle beside the fold control has three layouts. Portrait turns the open device a quarter clockwise into portrait and swaps in the `-inner-portrait` layout at the diagonal. The turn scales with how far the device is open, so folding it shut always lands upright on the cover. The portrait layouts are the **Duo Open - Inner Screen - Portrait** column of the iPhone Duo Figma file.
+
+Split view stays in landscape and crossfades to two apps side by side, following Apple's split layout: each app keeps its controls on its outer edge, and status sits in the right app's strip. noon is the left app, built from each screen's cover design (content plus its own side controls, scaled to the pane); the right app is a placeholder. These are the **Duo Open - Inner Screen - Split View** column in Figma.
 
 ## Assets
 

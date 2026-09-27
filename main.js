@@ -170,8 +170,9 @@ function crossfadeInner(apply) {
   screen.fade.value = 0;
   crossfade.elapsed = 0;
 }
-// The open screen has a layout per orientation; whichever is nearer upright is shown.
-let innerSet = { landscape: screens.inner.defaultTextures.portfolio, portrait: null };
+// The open screen has a layout per mode: landscape, portrait, and landscape split view
+// (noon on the left, a second app on the right). Portrait shows once nearer upright.
+let innerSet = { landscape: screens.inner.defaultTextures.portfolio, portrait: null, split: null };
 const demo = document.createElement('video');
 demo.id = 'navigation-demo'; demo.hidden = true; document.body.appendChild(demo);
 // The walkthrough recording is not shipped; the inner screen stays on the still.
@@ -217,7 +218,7 @@ for (const kind of ['outer', 'inner']) {
       // Screen-set textures are cached for reuse, so an upload never disposes the one it replaces.
       if (kind === 'inner') {
         demoEnabled = false; demo.pause();
-        innerSet = { landscape: texture, portrait: canvasTexture(fittedCanvas(image, width, height, '#fafafa', true)) };
+        innerSet = { landscape: texture, portrait: canvasTexture(fittedCanvas(image, width, height, '#fafafa', true)), split: texture };
         updateOrientation(true);
       } else setScreenMap(kind, texture);
       moveTo(kind === 'inner' ? 180 : 0);
@@ -240,7 +241,7 @@ const experiences = [
   { id: 'account', label: 'Account' },
 ];
 const screenCache = new Map();
-/** kind is 'outer', 'inner' or 'inner-portrait'; the portrait export is 1518 × 2160. */
+/** kind is 'outer', 'inner', 'inner-portrait' or 'inner-split'; the portrait export is 1518 × 2160. */
 async function loadScreenTexture(id, kind) {
   const key = `${id}:${kind}`;
   if (screenCache.has(key)) return screenCache.get(key);
@@ -269,12 +270,15 @@ async function showExperience(id) {
   screenToggle.dataset.loading = 'true';
   try {
     // Fetch both surfaces before swapping either, so the device never shows a mismatched pair.
-    const [outer, inner, portrait] = await Promise.all(id === BUNDLED_SCREEN
-      ? [screens.outer.defaultTextures.portfolio, screens.inner.defaultTextures.portfolio, loadScreenTexture(id, 'inner-portrait')]
-      : [loadScreenTexture(id, 'outer'), loadScreenTexture(id, 'inner'), loadScreenTexture(id, 'inner-portrait')]);
+    const [outer, inner, portrait, split] = await Promise.all([
+      ...(id === BUNDLED_SCREEN
+        ? [screens.outer.defaultTextures.portfolio, screens.inner.defaultTextures.portfolio]
+        : [loadScreenTexture(id, 'outer'), loadScreenTexture(id, 'inner')]),
+      loadScreenTexture(id, 'inner-portrait'), loadScreenTexture(id, 'inner-split'),
+    ]);
     const swap = () => {
       setScreenMap('outer', outer);
-      crossfadeInner(() => { innerSet = { landscape: inner, portrait }; updateOrientation(true); });
+      crossfadeInner(() => { innerSet = { landscape: inner, portrait, split }; updateOrientation(true); });
     };
     // Flex the hinge and change the screen at the apex, where the surface is most
     // foreshortened — the swap lands inside the motion instead of popping.
@@ -332,18 +336,22 @@ function showDefaultUI() {
     screen.frame.value.copy(kind === 'inner' ? innerUIFrame : outerUIFrame);
     screen.gradient.value.set(kind === 'inner' ? .5 : 0, kind === 'inner' ? 0 : 1);
   }
-  innerSet = { landscape: screens.inner.defaultTextures[uiTheme], portrait: null };
-  loadScreenTexture(BUNDLED_SCREEN, 'inner-portrait').then(texture => {
-    if (innerSet.landscape === screens.inner.defaultTextures[uiTheme]) { innerSet.portrait = texture; updateOrientation(true); }
-  }).catch(() => {});
+  const landscape = screens.inner.defaultTextures[uiTheme];
+  innerSet = { landscape, portrait: null, split: null };
+  for (const [mode, kind] of [['portrait', 'inner-portrait'], ['split', 'inner-split']]) {
+    loadScreenTexture(BUNDLED_SCREEN, kind).then(texture => {
+      if (innerSet.landscape === landscape) { innerSet[mode] = texture; updateOrientation(true); }
+    }).catch(() => {});
+  }
   updateOrientation(true);
   document.querySelectorAll('[data-ui-theme]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.uiTheme === uiTheme)));
 }
 document.querySelector('#reset-screens').addEventListener('click', showDefaultUI);
 
-// Orientation: the open device turns a quarter clockwise into portrait. The turn is
+// Layout: the open device turns a quarter clockwise into portrait. The turn is
 // scaled by how far the device is open, so folding shut always lands upright.
-let orientation = 'landscape';
+// Split view stays in landscape and puts a second app beside noon.
+let layout = 'landscape';
 const turn = { value: 0, from: 0, to: 0, elapsed: 0, duration: .7 };
 let appliedTurn = -1;
 let orientationHold = null;
@@ -357,26 +365,30 @@ function updateOrientation(force = false) {
   appliedTurn = t;
   rig.rotation.z = -Math.PI / 2 * t;
   // Swap layouts at the diagonal, dimming through it like a rotation snapshot.
-  const texture = t >= .5 && innerSet.portrait ? innerSet.portrait : innerSet.landscape;
+  const upright = layout === 'split' && innerSet.split ? innerSet.split : innerSet.landscape;
+  const texture = t >= .5 && innerSet.portrait ? innerSet.portrait : upright;
   if (!demoEnabled) setScreenMap('inner', texture);
   screens.inner.material.color.setScalar(1 - .85 * Math.exp(-(((t - .5) / .1) ** 2)));
   fitCamera();
 }
-const orientationButtons = document.querySelectorAll('[data-orientation]');
-function setOrientation(value) {
-  if (value === orientation) return;
+const layoutButtons = document.querySelectorAll('[data-layout]');
+function setLayout(value) {
+  if (value === layout) return;
   cancelAutoFold();
   uiTick();
-  orientation = value;
-  for (const button of orientationButtons) button.setAttribute('aria-pressed', String(button.dataset.orientation === value));
+  const turning = (value === 'portrait') !== (layout === 'portrait');
+  layout = value;
+  for (const button of layoutButtons) button.setAttribute('aria-pressed', String(button.dataset.layout === value));
   const target = value === 'portrait' ? 1 : 0;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) { turn.value = turn.to = target; }
-  else Object.assign(turn, { from: turn.value, to: target, elapsed: 0 });
-  // Orientation only shows on the open screen, so open the device to show it.
+  else if (turning) Object.assign(turn, { from: turn.value, to: target, elapsed: 0 });
+  // Layouts only show on the open screen, so open the device to show them.
   if (angle < 180) moveTo(180);
-  updateOrientation(true);
+  // A turn swaps layouts at the diagonal; landscape to split has no turn, so fade.
+  if (turning) updateOrientation(true);
+  else crossfadeInner(() => updateOrientation(true));
 }
-for (const button of orientationButtons) button.addEventListener('click', () => setOrientation(button.dataset.orientation));
+for (const button of layoutButtons) button.addEventListener('click', () => setLayout(button.dataset.layout));
 function moveTo(to) {
   cyclePositionValid = false;
   setPlaying(false);
