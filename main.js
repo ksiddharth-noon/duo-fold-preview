@@ -127,6 +127,9 @@ for (const kind of ['inner', 'outer']) {
     frame: { value: (kind === 'inner' ? innerUIFrame : outerUIFrame).clone() },
     gradient: { value: new THREE.Vector2(kind === 'inner' ? .5 : 0, kind === 'inner' ? 0 : 1) },
     pixel: { value: new THREE.Vector2(1 / defaultUIs[uiTheme][kind].width, 1 / defaultUIs[uiTheme][kind].height) },
+    // Crossfade from the previous screen: 1 shows only the current map.
+    previous: { value: null },
+    fade: { value: 1 },
   };
 }
 /** Fit an image onto a screen canvas without cropping. Portrait layouts are drawn a
@@ -155,6 +158,17 @@ function setScreenMap(kind, texture) {
   screen.material.map = texture;
   screen.material.needsUpdate = true;
   screen.pixel.value.set(1 / texture.image.width, 1 / texture.image.height);
+}
+const crossfade = { elapsed: 0, duration: .42 };
+/** Show the new inner map and fade to it from whatever the screen showed before. */
+function crossfadeInner(apply) {
+  const screen = screens.inner;
+  const before = screen.material.map;
+  apply();
+  if (screen.material.map === before || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  screen.previous.value = before;
+  screen.fade.value = 0;
+  crossfade.elapsed = 0;
 }
 // The open screen has a layout per orientation; whichever is nearer upright is shown.
 let innerSet = { landscape: screens.inner.defaultTextures.portfolio, portrait: null };
@@ -260,14 +274,16 @@ async function showExperience(id) {
       : [loadScreenTexture(id, 'outer'), loadScreenTexture(id, 'inner'), loadScreenTexture(id, 'inner-portrait')]);
     const swap = () => {
       setScreenMap('outer', outer);
-      innerSet = { landscape: inner, portrait };
-      updateOrientation(true);
+      crossfadeInner(() => { innerSet = { landscape: inner, portrait }; updateOrientation(true); });
     };
     // Flex the hinge and change the screen at the apex, where the surface is most
     // foreshortened — the swap lands inside the motion instead of popping.
     const still = ready && !playing && !matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (still && id !== activeExperience) {
       const resting = angle;
+      // The flex dips the hinge, which would otherwise turn a portrait device back
+      // toward landscape; hold the turn where it rests until the hinge settles.
+      orientationHold = hingeOpenness(resting);
       const apex = resting > 90 ? Math.max(resting - 34, 138) : Math.min(resting + 24, 46);
       await tweenAngle(resting, apex, .26);
       swap();
@@ -283,6 +299,7 @@ async function showExperience(id) {
   } catch {
     document.querySelector('#status').textContent = `The ${entry.label} screens could not be loaded.`;
   } finally {
+    orientationHold = null;
     screenSwitching = false;
     delete screenToggle.dataset.loading;
   }
@@ -329,9 +346,10 @@ document.querySelector('#reset-screens').addEventListener('click', showDefaultUI
 let orientation = 'landscape';
 const turn = { value: 0, from: 0, to: 0, elapsed: 0, duration: .7 };
 let appliedTurn = -1;
+let orientationHold = null;
+function hingeOpenness(value) { return THREE.MathUtils.smoothstep(value, 90, 180); }
 function effectiveTurn() {
-  const open = THREE.MathUtils.smoothstep(angle, 90, 180);
-  return turn.value * open;
+  return turn.value * (orientationHold ?? hingeOpenness(angle));
 }
 function updateOrientation(force = false) {
   const t = effectiveTurn();
@@ -435,7 +453,13 @@ uniform vec2 uiPixel;
 uniform vec4 uiFrame;
 uniform vec2 uiGradient;
 uniform vec3 uiReferenceEye;
+uniform sampler2D uiPrevious;
+uniform float uiFade;
 varying vec3 vUIPosition;
+vec3 sampleUI(vec2 uv, float lod) {
+  vec3 current = textureLod(map, uv, lod).rgb;
+  return uiFade < 1.0 ? mix(textureLod(uiPrevious, uv, lod).rgb, current, uiFade) : current;
+}
 vec3 screenColor() {
   // Intersect the fixed front-view ray with the unfolded inner-screen plane.
   float depth = (0.24948 - uiReferenceEye.z) / (vUIPosition.z - uiReferenceEye.z);
@@ -466,7 +490,7 @@ vec3 screenColor() {
   float baseLod = log2(max(1.0, max(length(dx), length(dy))));
   vec2 coverage = smoothstep(-aa, aa, sourceUV)
     * (1.0 - smoothstep(vec2(1.0) - aa, vec2(1.0) + aa, sourceUV));
-  vec3 color = textureLod(map, clamp(sourceUV, vec2(0.0), vec2(1.0)), baseLod).rgb * coverage.x * coverage.y;
+  vec3 color = sampleUI(clamp(sourceUV, vec2(0.0), vec2(1.0)), baseLod) * coverage.x * coverage.y;
   if (radius > 0.0) {
     // Use the same mip level at zero blur, then increase it continuously.
     float lod = max(baseLod, log2(max(1.0, radius)));
@@ -480,7 +504,7 @@ vec3 screenColor() {
         // Blur the image and its coverage together so color spreads into the black margin.
         vec2 coverage = smoothstep(-footprint, footprint, sampleUV)
           * (1.0 - smoothstep(vec2(1.0) - footprint, vec2(1.0) + footprint, sampleUV));
-        color += textureLod(map, clamp(sampleUV, vec2(0.0), vec2(1.0)), lod).rgb
+        color += sampleUI(clamp(sampleUV, vec2(0.0), vec2(1.0)), lod)
           * coverage.x * coverage.y * wx * wy / 256.0;
       }
     }
@@ -550,6 +574,8 @@ try {
           shader.uniforms.uiGradient = screens[kind].gradient;
           shader.uniforms.uiReferenceEye = { value: uiReferenceEye };
           shader.uniforms.uiPixel = screens[kind].pixel;
+          shader.uniforms.uiPrevious = screens[kind].previous;
+          shader.uniforms.uiFade = screens[kind].fade;
           shader.fragmentShader = shader.fragmentShader.replace('#include <map_pars_fragment>', `
             #include <map_pars_fragment>
             ${kind === 'inner' ? '#define INNER_UI' : ''}
@@ -619,6 +645,12 @@ renderer.setAnimationLoop(now => {
     const ease = progress * progress * (3 - 2 * progress);
     setAngle(THREE.MathUtils.lerp(transition.from, transition.to, ease));
     if (progress === 1) endTransition();
+  }
+  if (screens.inner.fade.value < 1) {
+    crossfade.elapsed += delta;
+    const progress = Math.min(crossfade.elapsed / crossfade.duration, 1);
+    screens.inner.fade.value = progress * progress * (3 - 2 * progress);
+    if (progress === 1) { screens.inner.fade.value = 1; screens.inner.previous.value = null; }
   }
   if (turn.value !== turn.to) {
     turn.elapsed += delta;
