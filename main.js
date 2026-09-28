@@ -132,15 +132,17 @@ for (const kind of ['inner', 'outer']) {
     fade: { value: 1 },
   };
 }
-/** Fit an image onto a screen canvas without cropping. Portrait layouts are drawn a
- * quarter turn anticlockwise, so they read upright once the device turns clockwise. */
-function fittedCanvas(image, width, height, fill, portrait = false) {
+/** Fit an image onto a screen canvas without cropping. A layout for a turned device is
+ * drawn a quarter turn the other way, so it reads upright once the device turns:
+ * turn -1 for a clockwise device (open portrait), +1 for anticlockwise (folded landscape). */
+function fittedCanvas(image, width, height, fill, turn = 0) {
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
   const c = canvas.getContext('2d');
   c.fillStyle = fill; c.fillRect(0, 0, width, height);
-  const [boxW, boxH] = portrait ? [height, width] : [width, height];
-  if (portrait) { c.translate(0, height); c.rotate(-Math.PI / 2); }
+  const [boxW, boxH] = turn ? [height, width] : [width, height];
+  if (turn < 0) { c.translate(0, height); c.rotate(-Math.PI / 2); }
+  if (turn > 0) { c.translate(width, 0); c.rotate(Math.PI / 2); }
   const scale = Math.min(boxW / image.width, boxH / image.height);
   c.drawImage(image, (boxW - image.width * scale) / 2, (boxH - image.height * scale) / 2,
     image.width * scale, image.height * scale);
@@ -173,6 +175,8 @@ function crossfadeInner(apply) {
 // The open screen has a layout per mode: landscape, portrait, and landscape split view
 // (noon on the left, a second app on the right). Portrait shows once nearer upright.
 let innerSet = { landscape: screens.inner.defaultTextures.portfolio, portrait: null, split: null };
+// The cover has one too: portrait, and landscape once the folded device turns anticlockwise.
+let outerSet = { portrait: screens.outer.defaultTextures.portfolio, landscape: null };
 const demo = document.createElement('video');
 demo.id = 'navigation-demo'; demo.hidden = true; document.body.appendChild(demo);
 // The walkthrough recording is not shipped; the inner screen stays on the still.
@@ -218,9 +222,9 @@ for (const kind of ['outer', 'inner']) {
       // Screen-set textures are cached for reuse, so an upload never disposes the one it replaces.
       if (kind === 'inner') {
         demoEnabled = false; demo.pause();
-        innerSet = { landscape: texture, portrait: canvasTexture(fittedCanvas(image, width, height, '#fafafa', true)), split: texture };
+        innerSet = { landscape: texture, portrait: canvasTexture(fittedCanvas(image, width, height, '#fafafa', -1)), split: texture };
         updateOrientation(true);
-      } else setScreenMap(kind, texture);
+      } else { outerSet = { portrait: texture, landscape: canvasTexture(fittedCanvas(image, width, height, '#fafafa', 1)) }; updateOrientation(true); }
       moveTo(kind === 'inner' ? 180 : 0);
       document.querySelector('#status').textContent = '';
     } catch { document.querySelector('#status').textContent = 'That image could not be opened. Try a PNG, JPG or WebP.'; }
@@ -241,7 +245,8 @@ const experiences = [
   { id: 'account', label: 'Account' },
 ];
 const screenCache = new Map();
-/** kind is 'outer', 'inner', 'inner-portrait' or 'inner-split'; the portrait export is 1518 × 2160. */
+/** kind is 'outer', 'outer-landscape', 'inner', 'inner-portrait' or 'inner-split'.
+ * The open portrait export is 1518 × 2160; the folded landscape one 851 × 585. */
 async function loadScreenTexture(id, kind) {
   const key = `${id}:${kind}`;
   if (screenCache.has(key)) return screenCache.get(key);
@@ -249,8 +254,9 @@ async function loadScreenTexture(id, kind) {
     const image = new Image();
     image.src = `./previews/screens/${id}-${kind}.webp`;
     await image.decode();
-    const [width, height] = kind === 'outer' ? [585, 851] : [2160, 1518];
-    return canvasTexture(fittedCanvas(image, width, height, '#ffffff', kind === 'inner-portrait'));
+    const [width, height] = kind.startsWith('outer') ? [585, 851] : [2160, 1518];
+    const turn = kind === 'inner-portrait' ? -1 : kind === 'outer-landscape' ? 1 : 0;
+    return canvasTexture(fittedCanvas(image, width, height, '#ffffff', turn));
   })();
   screenCache.set(key, pending);
   pending.catch(() => screenCache.delete(key));
@@ -270,14 +276,14 @@ async function showExperience(id) {
   screenToggle.dataset.loading = 'true';
   try {
     // Fetch both surfaces before swapping either, so the device never shows a mismatched pair.
-    const [outer, inner, portrait, split] = await Promise.all([
+    const [outer, inner, portrait, split, outerLandscape] = await Promise.all([
       ...(id === BUNDLED_SCREEN
         ? [screens.outer.defaultTextures.portfolio, screens.inner.defaultTextures.portfolio]
         : [loadScreenTexture(id, 'outer'), loadScreenTexture(id, 'inner')]),
-      loadScreenTexture(id, 'inner-portrait'), loadScreenTexture(id, 'inner-split'),
+      loadScreenTexture(id, 'inner-portrait'), loadScreenTexture(id, 'inner-split'), loadScreenTexture(id, 'outer-landscape'),
     ]);
     const swap = () => {
-      setScreenMap('outer', outer);
+      outerSet = { portrait: outer, landscape: outerLandscape };
       crossfadeInner(() => { innerSet = { landscape: inner, portrait, split }; updateOrientation(true); });
     };
     // Flex the hinge and change the screen at the apex, where the surface is most
@@ -343,47 +349,78 @@ function showDefaultUI() {
       if (innerSet.landscape === landscape) { innerSet[mode] = texture; updateOrientation(true); }
     }).catch(() => {});
   }
+  const cover = screens.outer.defaultTextures[uiTheme];
+  outerSet = { portrait: cover, landscape: null };
+  loadScreenTexture(BUNDLED_SCREEN, 'outer-landscape').then(texture => {
+    if (outerSet.portrait === cover) { outerSet.landscape = texture; updateOrientation(true); }
+  }).catch(() => {});
   updateOrientation(true);
   document.querySelectorAll('[data-ui-theme]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.uiTheme === uiTheme)));
 }
 document.querySelector('#reset-screens').addEventListener('click', showDefaultUI);
 
-// Layout: the open device turns a quarter clockwise into portrait. The turn is
-// scaled by how far the device is open, so folding shut always lands upright.
-// Split view stays in landscape and puts a second app beside noon.
+// Layout: the open device turns a quarter clockwise into portrait; split view stays in
+// landscape and puts a second app beside noon. Folded, the cover is upright (portrait)
+// or turned a quarter anticlockwise (landscape). The device's turn blends between the
+// folded and open ones as the hinge moves, so each state lands the way it was chosen.
 let layout = 'landscape';
+let coverLayout = 'portrait';
 const turn = { value: 0, from: 0, to: 0, elapsed: 0, duration: .7 };
-let appliedTurn = -1;
+const coverTurn = { value: 0, from: 0, to: 0, elapsed: 0, duration: .7 };
+let applied = '';
 let orientationHold = null;
 function hingeOpenness(value) { return THREE.MathUtils.smoothstep(value, 90, 180); }
 function effectiveTurn() {
   return turn.value * (orientationHold ?? hingeOpenness(angle));
 }
+const snapshotDim = t => 1 - .85 * Math.exp(-(((t - .5) / .1) ** 2));
+const folded = () => angle < 90;
 function updateOrientation(force = false) {
-  const t = effectiveTurn();
-  if (!force && t === appliedTurn) return;
-  appliedTurn = t;
-  rig.rotation.z = -Math.PI / 2 * t;
+  const open = orientationHold ?? hingeOpenness(angle);
+  const t = turn.value * open, tc = coverTurn.value * (1 - open);
+  const key = `${t}|${tc}|${angle >= 180}`;
+  if (!force && key === applied) return;
+  applied = key;
+  rig.rotation.z = -Math.PI / 2 * t + Math.PI / 2 * tc;
   // Swap layouts at the diagonal, dimming through it like a rotation snapshot.
   const upright = layout === 'split' && innerSet.split ? innerSet.split : innerSet.landscape;
   const texture = t >= .5 && innerSet.portrait ? innerSet.portrait : upright;
   if (!demoEnabled) setScreenMap('inner', texture);
-  screens.inner.material.color.setScalar(1 - .85 * Math.exp(-(((t - .5) / .1) ** 2)));
+  screens.inner.material.color.setScalar(snapshotDim(t));
+  setScreenMap('outer', tc >= .5 && outerSet.landscape ? outerSet.landscape : outerSet.portrait);
+  screens.outer.material.color.setScalar(angle >= 180 ? 0 : snapshotDim(tc));
   fitCamera();
 }
 const layoutButtons = document.querySelectorAll('[data-layout]');
+/** The toggle shows the folded cover's layout while shut, and the open layout otherwise. */
+function syncLayoutButtons() {
+  const current = folded() ? coverLayout : layout;
+  for (const button of layoutButtons) button.setAttribute('aria-pressed', String(button.dataset.layout === current));
+}
+function tweenTo(state, target) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) state.value = state.to = target;
+  else Object.assign(state, { from: state.value, to: target, elapsed: 0 });
+}
 function setLayout(value) {
-  if (value === layout) return;
   cancelAutoFold();
+  // Shut, Landscape and Portrait turn the cover; split view needs the device open.
+  if (folded() && value !== 'split') {
+    if (value === coverLayout) return;
+    uiTick();
+    coverLayout = value;
+    tweenTo(coverTurn, value === 'landscape' ? 1 : 0);
+    syncLayoutButtons();
+    updateOrientation(true);
+    return;
+  }
+  if (value === layout && !folded()) return;
   uiTick();
   const turning = (value === 'portrait') !== (layout === 'portrait');
   layout = value;
-  for (const button of layoutButtons) button.setAttribute('aria-pressed', String(button.dataset.layout === value));
-  const target = value === 'portrait' ? 1 : 0;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { turn.value = turn.to = target; }
-  else if (turning) Object.assign(turn, { from: turn.value, to: target, elapsed: 0 });
+  if (turning) tweenTo(turn, value === 'portrait' ? 1 : 0);
   // Layouts only show on the open screen, so open the device to show them.
   if (angle < 180) moveTo(180);
+  syncLayoutButtons();
   // A turn swaps layouts at the diagonal; landscape to split has no turn, so fade.
   if (turning) updateOrientation(true);
   else crossfadeInner(() => updateOrientation(true));
@@ -416,7 +453,8 @@ function setAngle(value) {
   slider.value = value;
   slider.style.setProperty('--progress', `${value / 1.8}%`);
   bend.value = (180 - value) / 180 * Math.PI;
-  screens.outer.material.color.setScalar(value >= 180 ? 0 : 1);
+  const wasFolded = document.documentElement.dataset.folded === 'true';
+  if (wasFolded !== folded()) { document.documentElement.dataset.folded = String(folded()); syncLayoutButtons(); }
   updateOrientation();
 }
 play.addEventListener('click', () => {
@@ -452,7 +490,7 @@ function fitCamera() {
   const { width, height, canvasHeight } = viewSize;
   // The device is still sized against the layout box; the spill is pure headroom.
   // Its footprint swaps axes as it turns into portrait.
-  const t = rig.rotation.z / (-Math.PI / 2);
+  const t = Math.min(1, Math.abs(rig.rotation.z) / (Math.PI / 2));
   const pixelsPerUnit = Math.min(width / THREE.MathUtils.lerp(20, 14, t), height / THREE.MathUtils.lerp(14, 20, t), 45) * 1.15;
   camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(canvasHeight / pixelsPerUnit / 2 / 40));
   camera.updateProjectionMatrix();
@@ -664,11 +702,12 @@ renderer.setAnimationLoop(now => {
     screens.inner.fade.value = progress * progress * (3 - 2 * progress);
     if (progress === 1) { screens.inner.fade.value = 1; screens.inner.previous.value = null; }
   }
-  if (turn.value !== turn.to) {
-    turn.elapsed += delta;
-    const progress = Math.min(turn.elapsed / turn.duration, 1);
-    turn.value = THREE.MathUtils.lerp(turn.from, turn.to, progress * progress * (3 - 2 * progress));
-    if (progress === 1) turn.value = turn.to;
+  for (const state of [turn, coverTurn]) {
+    if (state.value === state.to) continue;
+    state.elapsed += delta;
+    const progress = Math.min(state.elapsed / state.duration, 1);
+    state.value = THREE.MathUtils.lerp(state.from, state.to, progress * progress * (3 - 2 * progress));
+    if (progress === 1) state.value = state.to;
     updateOrientation();
   }
   if (ready) updateDemo();
